@@ -6,7 +6,6 @@
 
 - **统一 API 接口:** 提供一个与 OpenAI Chat Completions API 完全兼容的接口 (`/v1/chat/completions`)，让任何支持 OpenAI API 的第三方应用（如 LobeChat, NextChat, Vercel AI Playground 等）都能无缝地、无需修改地使用您本地的 Gemini 模型能力。
 - **简化认证:** 您只需在本地运行一次 Gemini CLI 并完成 Google 账号的登录认证。本代理服务将自动利用这个已建立的认证，您无需为任何第三方应用单独配置或暴露您的 API 密钥。
-- **用户友好的控制面板:** 提供一个直观的 Web UI，用户可以轻松查看服务运行状态、获取 API 配置信息、观察实时日志，并通过内置的聊天功能进行端到端的测试。
 - **零配置启动:** 项目完全自包含，不依赖任何全局安装。用户只需遵循标准的 `git clone` -> `npm install` -> `npm start/dev` 流程即可启动，极大降低了使用门槛。
 
 ---
@@ -95,12 +94,13 @@ graph TD
 ---
 
 ## 4. 最终运行指南
+1. **先在本地启动Gemini cli，然后登陆自己的账号** 
 
-1.  **进入项目目录:**
+2.  **进入项目目录:**
     ```bash
     cd gemini-openai-proxy
     ```
-2.  **安装所有依赖:**
+3.  **安装所有依赖:**
     ```bash
     npm install
     ```3.  **启动开发环境 (推荐):**
@@ -108,12 +108,12 @@ graph TD
     npm run dev
     ```    启动后，在浏览器中访问 `http://localhost:5173` 查看功能完善的控制面板。
 
-4.  **构建并运行生产环境:**
+5.  **构建并运行生产环境:**
     ```bash
     npm run build
     npm start
     ```
-    启动后，在浏览器中访问 `http://localhost:3003`。
+ 
 
 ---
 
