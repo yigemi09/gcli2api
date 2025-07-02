@@ -1,0 +1,30 @@
+// tsconfig.comment.json 文件说明：
+// 本文件为 tsconfig.json 的带注释版本，仅供开发者阅读参考。
+// 实际 TypeScript 配置请使用无注释的 tsconfig.json 文件。
+// 每个字段均有详细中文注释，便于理解和维护。
+{
+  "compilerOptions": {
+    // 指定 ECMAScript 目标版本，这里为 ES2022，支持较新语法特性
+    "target": "ES2022",
+    // 指定模块系统，这里为 NodeNext，适配 Node.js 的 ESM 方案
+    "module": "NodeNext",
+    // 指定模块解析方式，NodeNext 支持 ESM 与 CommonJS 混用
+    "moduleResolution": "NodeNext",
+    // 编译输出目录，所有编译后的 JS 文件会放在 dist 目录下
+    "outDir": "./dist",
+    // 源码根目录，TypeScript 只会编译 src 目录下的文件
+    "rootDir": "./src",
+    // 启用所有严格类型检查选项，提升代码健壮性
+    "strict": true,
+    // 允许默认导入非 ESModule 模块，提升兼容性
+    "esModuleInterop": true,
+    // 跳过库文件类型检查，加快编译速度
+    "skipLibCheck": true,
+    // 强制文件名大小写一致，避免跨平台问题
+    "forceConsistentCasingInFileNames": true
+  },
+  // 指定需要编译的文件范围，这里包含 src 目录下所有文件
+  "include": ["src/**/*"],
+  // 排除 node_modules 目录，避免编译第三方依赖
+  "exclude": ["node_modules"]
+}

@@ -1,0 +1,11 @@
+{
+  // 文件用途：Vite 配置专用 TypeScript 配置，支持类型检查与 IDE 智能提示
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["vite.config.ts"]
+}

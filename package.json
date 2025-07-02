@@ -1,0 +1,54 @@
+{
+  "name": "gemini-openai-proxy",
+  "version": "2.0.2",
+  "description": "An OpenAI-compatible API proxy for the Gemini CLI, with a Web UI.",
+  "main": "dist-server/server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:server\" \"npm:dev:ui\"",
+    "dev:server": "tsc -w --project tsconfig.server.json & nodemon dist-server/server.js",
+    "dev:ui": "vite webui --config webui/vite.config.ts",
+    "build": "npm run build:ui & npm run build:server",
+    "build:ui": "vite build webui --config webui/vite.config.ts",
+    "build:server": "tsc --project tsconfig.server.json",
+    "start": "NODE_ENV=production node dist-server/server.js"
+  },
+  "keywords": [
+    "gemini",
+    "openai",
+    "proxy",
+    "api",
+    "webui"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@fastify/static": "^7.0.4",
+    "@fastify/websocket": "^10.0.1",
+    "@radix-ui/react-scroll-area": "^1.2.9",
+    "@radix-ui/react-slot": "^1.2.3",
+    "class-variance-authority": "^0.7.1",
+    "fastify": "^4.26.2",
+    "lucide-react": "^0.525.0"
+  },
+  "devDependencies": {
+    "@google/gemini-cli": "github:google-gemini/gemini-cli",
+    "@types/node": "^20.12.7",
+    "@types/react": "^18.2.66",
+    "@types/react-dom": "^18.2.22",
+    "@types/ws": "^8.5.10",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.19",
+    "clsx": "^2.1.1",
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.1.0",
+    "pino-pretty": "^11.0.0",
+    "postcss": "^8.4.38",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tailwind-merge": "^2.6.0",
+    "tailwindcss": "^3.4.3",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.0"
+  }
+}
