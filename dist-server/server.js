@@ -7,8 +7,8 @@ import fastifyWebsocket from '@fastify/websocket';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
-import { invokeGeminiCli } from './cli-runner.js';
-import { openAiToGeminiPrompt, formatToOpenAiSse } from './adapter.js';
+import { geminiProvider } from './gemini-provider.js';
+import { formatToOpenAiSse } from './adapter.js';
 // 获取当前目录，兼容 ESM
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 端口与环境变量
@@ -38,7 +38,7 @@ server.setErrorHandler((error, request, reply) => {
 const logConnections = new Set();
 /**
  * 广播日志到所有已连接的 WebSocket 客户端
- * @param type 日志类型（info/error/data）
+ * @param type 日志类型（info/error/data/debug）
  * @param message 日志内容
  */
 export function broadcastLog(type, message) {
@@ -47,7 +47,7 @@ export function broadcastLog(type, message) {
         if (type === 'error') {
             server.log.error(message);
         }
-        else if (type === 'info') {
+        else if (type === 'info' || type === 'debug') { // 将 'debug' 和 'info' 同等对待
             server.log.info(message);
         }
         else {
@@ -109,171 +109,179 @@ server.register(async (fastify) => {
 // ========================
 // OpenAI 兼容 API 路由
 // ========================
-async function handleGeminiCliRequest(prompt, model, // 当前请求使用的模型
-stream, // 是否是流式请求
-reply, // Fastify 的 reply 对象
-isFallbackAttempt = false) {
-    broadcastLog('info', '[handleGeminiCliRequest] 函数已进入。');
-    let responseText = ''; // 将 responseText 声明移到这里
-    let errorHandled = false; // 标志，用于确保只发送一次响应
-    broadcastLog('info', `[handleGeminiCliRequest] 正在调用 invokeGeminiCli...`);
-    const { stdout: geminiStdoutStream, stderr: geminiStderrStream } = invokeGeminiCli(prompt, model);
-    broadcastLog('info', `[handleGeminiCliRequest] invokeGeminiCli 调用完成。已获取流。`);
-    // 创建一个 Promise，用于等待 stderr 错误或 stdout 结束
-    broadcastLog('info', `[handleGeminiCliRequest] 正在等待 stderr 流结束...`);
-    const stderrPromise = new Promise((resolve) => {
-        let stderrOutput = '';
-        const timeoutId = setTimeout(() => {
-            broadcastLog('info', '[handleGeminiCliRequest] stderr 流超时，继续处理。');
-            resolve(stderrOutput || null); // 超时后也解析
-        }, 15000); // 15秒超时
-        geminiStderrStream.on('data', (data) => {
-            stderrOutput += data.toString();
-        });
-        geminiStderrStream.on('end', () => {
-            clearTimeout(timeoutId);
-            resolve(stderrOutput || null);
-        });
-        geminiStderrStream.on('error', (err) => {
-            clearTimeout(timeoutId);
-            broadcastLog('error', `Gemini CLI Stderr Stream Error: ${err.message}`);
-            resolve(err.message);
-        });
-    });
-    // 监听 stdout 流的错误（例如，管道中断）
-    geminiStdoutStream.on('error', (err) => {
-        broadcastLog('error', `Gemini CLI Stdout Stream Error: ${err.message}`);
-        if (!errorHandled) {
-            errorHandled = true;
-            const openaiErrorResponse = {
-                error: {
-                    message: `内部服务器错误：${err.message}`,
-                    type: 'stream_error',
-                    param: null,
-                    code: '500',
-                },
-            };
-            reply.status(500).send(openaiErrorResponse);
+server.post('/v1/chat/completions', async (request, reply) => {
+    // 解析 OpenAI 格式请求体，分离 system 指令与对话消息
+    // 解析 OpenAI 格式请求体，分离 system 指令与对话消息
+    const { messages, model, stream } = request.body;
+    broadcastLog('info', `收到对模型 ${model} 的请求, stream=${stream}`);
+    /**
+     * 分离 system 指令与对话消息
+     * - systemInstruction: 合并所有 system 消息内容（用换行符连接）
+     * - conversationMessages: 仅包含 user/assistant 消息
+     */
+    let systemInstruction = '';
+    const conversationMessages = [];
+    /**
+     * 提取 OpenAI 消息 content 字段中的文本内容，无论其为字符串、对象还是数组结构。
+     * @param content 任意类型的 content 字段
+     * @returns 提取出的文本内容，若无法提取则返回 null
+     */
+    function extractTextContent(content) {
+        // 1. 字符串类型，直接返回
+        if (typeof content === 'string') {
+            return content;
         }
-    });
-    // 等待 stderr 结束，以便处理所有错误信息
-    const finalStderrOutput = await stderrPromise;
-    broadcastLog('info', `[handleGeminiCliRequest] stderr 流结束。输出: ${finalStderrOutput ? finalStderrOutput.substring(0, 100) + '...' : '(无)'}`);
-    if (finalStderrOutput) {
-        broadcastLog('info', `[handleGeminiCliRequest] 检测到 stderr 输出。正在处理错误/回退逻辑...`);
-        broadcastLog('error', `Gemini CLI Stderr: ${finalStderrOutput}`);
-        // 检查是否是速率限制错误
-        if (finalStderrOutput.includes('rate limit exceeded') ||
-            finalStderrOutput.includes('quota') ||
-            finalStderrOutput.includes('limit')) {
-            // 如果当前模型是 gemini-pro 并且不是回退尝试，则尝试回退到 flash 模型
-            if (model === 'gemini-pro' && !isFallbackAttempt) {
-                broadcastLog('info', '检测到 Gemini 2.5 Pro 配额耗尽，尝试回退到 gemini-2.5-flash 模型。');
-                // 直接调用 invokeGeminiCli，并明确指定 gemini-1.5-flash 模型
-                // 注意：这里不再递归调用 handleGeminiCliRequest，而是直接处理请求
-                const { stdout: fallbackStdoutStream, stderr: fallbackStderrStream } = invokeGeminiCli(prompt, 'gemini-2.5-flash');
-                // 监听回退流的 stderr
-                fallbackStderrStream.on('data', (data) => {
-                    broadcastLog('error', `Gemini CLI Fallback Stderr: ${data.toString()}`);
-                });
-                // 监听回退流的 stdout 错误
-                fallbackStdoutStream.on('error', (err) => {
-                    broadcastLog('error', `Gemini CLI Fallback Stdout Stream Error: ${err.message}`);
-                    if (!errorHandled) {
-                        errorHandled = true;
-                        const openaiErrorResponse = {
-                            error: {
-                                message: `内部服务器错误（回退）：${err.message}`,
-                                type: 'stream_error',
-                                param: null,
-                                code: '500',
-                            },
-                        };
-                        reply.status(500).send(openaiErrorResponse);
+        // 2. 数组类型，递归拼接所有 type: 'text' 且 text 为字符串的 text 字段
+        if (Array.isArray(content)) {
+            return content
+                .map((item) => extractTextContent(item))
+                .filter((txt) => typeof txt === 'string' && txt.trim().length > 0)
+                .join('');
+        }
+        // 3. 对象类型，若有 type: 'text' 且 text 为字符串，返回 text
+        if (content &&
+            typeof content === 'object' &&
+            content.type === 'text' &&
+            typeof content.text === 'string') {
+            return content.text;
+        }
+        // 4. 其他情况，无法提取
+        return null;
+    }
+    if (Array.isArray(messages)) {
+        for (const message of messages) {
+            if (message && typeof message === 'object') {
+                if (message.role === 'system' && message.content) {
+                    systemInstruction += (systemInstruction ? '\n' : '') + String(message.content).trim();
+                }
+                else if ((message.role === 'user' || message.role === 'assistant') &&
+                    message.content) {
+                    const extractedContent = extractTextContent(message.content);
+                    if (typeof extractedContent === 'string' && extractedContent.trim().length > 0) {
+                        conversationMessages.push({
+                            role: message.role,
+                            content: extractedContent,
+                        });
                     }
-                });
-                // 处理回退流的响应
-                let fallbackResponseText = '';
-                for await (const chunk of fallbackStdoutStream) {
-                    fallbackResponseText += chunk.toString();
-                }
-                if (stream) {
-                    reply.raw.setHeader('Content-Type', 'text/event-stream');
-                    const sseData = formatToOpenAiSse(fallbackResponseText.trim(), 'gemini-2.5-flash');
-                    reply.raw.write(sseData);
-                    reply.raw.write('data: [DONE]\n\n');
-                    reply.raw.end();
-                }
-                else {
-                    reply.send({ choices: [{ message: { content: fallbackResponseText.trim() } }] });
-                }
-                return; // 阻止当前函数继续发送错误响应
-            }
-            else {
-                // 如果已经是回退尝试，或者不是 gemini-pro 模型，则发送错误响应
-                if (!errorHandled) {
-                    errorHandled = true;
-                    const openaiErrorResponse = {
-                        error: {
-                            message: '您的 Gemini 2.5 Pro 账户已达到每日使用配额上限。请稍后再试，或联系管理员提升配额。',
-                            type: 'rate_limit_exceeded',
-                            param: null,
-                            code: '429',
-                        },
-                    };
-                    reply.status(429).send(openaiErrorResponse);
                 }
             }
         }
-        broadcastLog('info', `[handleGeminiCliRequest] 错误/回退逻辑处理完成。`);
     }
-    else {
-        broadcastLog('info', `[handleGeminiCliRequest] 无 stderr 输出，继续处理 stdout。`);
+    // 输出分离结果日志，便于调试
+    if (systemInstruction) {
+        broadcastLog('debug', `[server] 提取的 systemInstruction: ${systemInstruction.length > 100
+            ? systemInstruction.substring(0, 100) + '...'
+            : systemInstruction}`);
     }
-    // 如果错误未被处理，则继续处理 stdout
-    if (!errorHandled) {
-        broadcastLog('info', `[handleGeminiCliRequest] 正在收集 stdout 流数据...`);
-        let responseText = '';
-        for await (const chunk of geminiStdoutStream) {
-            responseText += chunk.toString();
+    broadcastLog('debug', `[server] 传递给 GeminiProvider 的对话消息数量: ${conversationMessages.length}`);
+    /**
+     * @description 辅助函数，用于解析 Gemini API 返回的 SSE (Server-Sent Events) 流。
+     * @param stream 从 aUTH client 返回的 Node.js 可读流。
+     * @returns 一个异步生成器，逐个 yield 解析出的 JSON 对象。
+     */
+    /**
+     * 解析 SSE (Server-Sent Events) 数据流，并逐条产出 JSON 消息。
+     * 本函数包含详细日志，便于诊断数据流解析的每个阶段。
+     * @param stream 可读流（通常为 HTTP 响应体）
+     * @yields 解析后的 JSON 对象
+     */
+    /**
+     * 解析 SSE (Server-Sent Events) 数据流，并逐条产出 JSON 消息。
+     * 本函数包含详细日志，便于诊断数据流解析的每个阶段。
+     * @param stream 可读流（通常为 HTTP 响应体）
+     * @yields 解析后的 JSON 对象
+     */
+    async function* parseSseStream(stream) {
+        let buffer = '';
+        const decoder = new TextDecoder('utf-8');
+        // 逐块读取流数据
+        for await (const chunk of stream) {
+            const decodedChunk = decoder.decode(chunk, { stream: true });
+            buffer += decodedChunk; // 将新的数据追加到缓冲区
+            let position;
+            while ((position = buffer.indexOf('\n')) !== -1) {
+                const line = buffer.substring(0, position).trim();
+                buffer = buffer.substring(position + 1); // 移除已处理的行
+                if (line.startsWith('data: ')) {
+                    const data = line.substring(6);
+                    if (data === '[DONE]') {
+                        // DONE 消息不应该被 yield，由上层处理
+                        continue;
+                    }
+                    try {
+                        const parsedData = JSON.parse(data);
+                        yield parsedData;
+                    }
+                    catch (e) {
+                        server.log.error({ err: e, rawData: data }, '解析 SSE JSON 数据失败');
+                    }
+                }
+                else if (line === '') {
+                    // 遇到空行（两个换行符之间），表示一个完整的事件结束，但此处通常由 `data:` 前缀处理
+                    // 对于非 `data:` 行，如果不是空行，则被忽略
+                }
+            }
         }
-        broadcastLog('info', `[handleGeminiCliRequest] stdout 流数据收集完成。响应文本长度: ${responseText.length}`);
-        broadcastLog('info', `[handleGeminiCliRequest] 正在格式化并发送响应...`);
+    }
+    try {
+        // 步骤 1: 调用 geminiProvider.createMessage，传递分离后的参数
+        // conversationMessages: 仅 user/assistant 消息
+        // model: 指定模型
+        // systemInstruction: 合并后的 system 指令
+        // 调用 GeminiProvider，传递分离后的参数，彻底避免 system 指令混入对话消息，防止 400 错误
+        // 修正：仅传递 user/model 消息，且确保 content 为字符串，assistant 映射为 model
+        /**
+         * Gemini API 只接受 role 为 'user' 或 'model' 的消息，且 content 必须为字符串。
+         * 这里将 OpenAI 格式的 'assistant' 映射为 'model'，并严格过滤。
+         */
+        const geminiMessages = conversationMessages
+            .filter((msg) => (msg.role === 'user' || msg.role === 'assistant') &&
+            typeof msg.content === 'string')
+            .map((msg) => ({
+            role: msg.role === 'assistant' ? 'model' : 'user',
+            content: msg.content,
+        }));
+        const response = await geminiProvider.createMessage(geminiMessages, model, systemInstruction);
+        // 步骤 2: 从响应对象中提取 `.data` 属性，即 Node.js 的可读流。
+        const messageStream = response.data;
         if (stream) {
-            // SSE 流式响应
+            // --- 流式响应处理 ---
             reply.raw.setHeader('Content-Type', 'text/event-stream');
-            const sseData = formatToOpenAiSse(responseText.trim(), model);
-            reply.raw.write(sseData);
+            reply.raw.setHeader('Cache-Control', 'no-cache');
+            reply.raw.setHeader('Connection', 'keep-alive');
+            for await (const parsedChunk of parseSseStream(messageStream)) {
+                const sseData = formatToOpenAiSse(parsedChunk, model);
+                // 仅当 sseData 不为 null 时才写入流
+                if (sseData) {
+                    reply.raw.write(sseData);
+                }
+            }
             reply.raw.write('data: [DONE]\n\n');
             reply.raw.end();
         }
         else {
-            // 普通 JSON 响应
-            reply.send({ choices: [{ message: { content: responseText.trim() } }] });
+            // --- 非流式响应处理 ---
+            let fullContent = "";
+            // 步骤 3: 遍历解析后的数据块，并从中提取文本内容进行拼接。
+            for await (const parsedChunk of parseSseStream(messageStream)) {
+                // 修正：正确提取非流式响应的文本内容，兼容 Google API 返回结构
+                const text = parsedChunk?.response?.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (text) {
+                    fullContent += text;
+                }
+            }
+            reply.send({ choices: [{ message: { content: fullContent.trim() } }] });
         }
-        broadcastLog('info', `[handleGeminiCliRequest] 响应已发送。`);
     }
-    else {
-        broadcastLog('info', `[handleGeminiCliRequest] 错误已处理，跳过 stdout 处理和响应发送。`);
+    catch (error) {
+        broadcastLog('error', `处理 /v1/chat/completions 请求时出错: ${error.message}`);
+        server.log.error(error, `Request to /v1/chat/completions failed with model ${model}`);
+        reply.status(500).send({
+            error: 'Internal Server Error',
+            message: error.message,
+            stack: IS_PROD ? undefined : error.stack // 仅在非生产环境暴露堆栈信息
+        });
     }
-}
-/**
- * 聊天补全接口，兼容 OpenAI API
- * - 支持 SSE 流式返回
- * - 日志实时广播
- */
-server.post('/v1/chat/completions', async (request, reply) => {
-    broadcastLog('info', `[Route] 收到 /v1/chat/completions 请求。`);
-    broadcastLog('info', `[Route] 正在解构请求体...`);
-    const { messages, model, stream } = request.body;
-    broadcastLog('info', `[Route] 请求体解构完成。Model: ${model}, Stream: ${stream}`);
-    broadcastLog('info', `[Route] Messages (first 100 chars): ${JSON.stringify(messages).substring(0, 100)}...`);
-    broadcastLog('info', `[Route] 正在生成 Gemini CLI 提示...`);
-    const prompt = openAiToGeminiPrompt(messages);
-    broadcastLog('info', `[Route] Gemini CLI 提示生成完成。提示长度: ${prompt.length}`);
-    broadcastLog('info', `[Route] 正在调用 handleGeminiCliRequest...`);
-    await handleGeminiCliRequest(prompt, model || 'gemini-pro', stream || false, reply);
-    broadcastLog('info', `[Route] handleGeminiCliRequest 完成。`);
 });
 /**
  * 状态检查接口
@@ -316,13 +324,21 @@ server.get('/v1/models', async (_request, reply) => {
 /**
  * 启动 Fastify 服务器
  */
-const start = async () => {
+/**
+ * 应用程序主入口
+ */
+const main = async () => {
     try {
+        // 在服务器启动前确保 Gemini Provider 已通过认证
+        broadcastLog('info', '正在验证 Gemini Provider 身份...');
+        await geminiProvider.ensureAuthenticated();
+        broadcastLog('info', 'Gemini Provider 身份验证成功。');
+        // 启动 Fastify 服务器
         await server.listen({ port: PORT, host: '0.0.0.0' });
     }
     catch (err) {
-        server.log.error(err);
+        server.log.error('应用程序启动失败:', err);
         process.exit(1);
     }
 };
-start();
+main();

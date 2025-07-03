@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm:dev:server\" \"npm:dev:ui\"",
-    "dev:server": "tsc -w --project tsconfig.server.json & nodemon dist-server/server.js",
+    "clean": "rm -rf dist-server",
+    "dev:server": "npm run clean && npm run build:server && concurrently \"tsc -w\" \"nodemon\"",
     "dev:ui": "vite webui --config webui/vite.config.ts",
     "build": "npm run build:ui & npm run build:server",
     "build:ui": "vite build webui --config webui/vite.config.ts",
@@ -27,8 +28,10 @@
     "@fastify/websocket": "^10.0.1",
     "@radix-ui/react-scroll-area": "^1.2.9",
     "@radix-ui/react-slot": "^1.2.3",
+    "axios": "^1.10.0",
     "class-variance-authority": "^0.7.1",
     "fastify": "^4.26.2",
+    "google-auth-library": "^10.1.0",
     "lucide-react": "^0.525.0"
   },
   "devDependencies": {
@@ -48,6 +51,7 @@
     "react-dom": "^18.2.0",
     "tailwind-merge": "^2.6.0",
     "tailwindcss": "^3.4.3",
+    "tsc-watch": "^7.1.1",
     "typescript": "^5.4.5",
     "vite": "^5.2.0"
   }

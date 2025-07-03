@@ -1,18 +1,18 @@
-# Gemini OpenAI Proxy - 开发全过程文档
+# Gemini OpenAI Proxy
 
-## 1. 项目功能总览
+## 1. 项目功能总览与核心原理
 
-**Gemini OpenAI Proxy** 是一个功能完备、带有精美 Web UI 控制面板的全栈应用。它作为您本地 Gemini CLI 的一个强大的代理服务，旨在解决以下核心问题：
+**Gemini OpenAI Proxy** 是一个功能完备、带有 Web UI 控制面板的全栈应用。它作为您与 Google Gemini API 交互的强大代理服务，旨在解决以下核心问题：
 
-- **统一 API 接口:** 提供一个与 OpenAI Chat Completions API 完全兼容的接口 (`/v1/chat/completions`)，让任何支持 OpenAI API 的第三方应用（如 LobeChat, NextChat, Vercel AI Playground 等）都能无缝地、无需修改地使用您本地的 Gemini 模型能力。
-- **简化认证:** 您只需在本地运行一次 Gemini CLI 并完成 Google 账号的登录认证。本代理服务将自动利用这个已建立的认证，您无需为任何第三方应用单独配置或暴露您的 API 密钥。
-- **零配置启动:** 项目完全自包含，不依赖任何全局安装。用户只需遵循标准的 `git clone` -> `npm install` -> `npm start/dev` 流程即可启动，极大降低了使用门槛。
+-   **统一 API 接口:** 提供一个与 OpenAI Chat Completions API 完全兼容的接口 (`/v1/chat/completions`)，让任何支持 OpenAI API 的第三方应用（如 LobeChat, NextChat, Vercel AI Playground 等）都能无缝地、无需修改地使用 Google Gemini 模型能力。
+-   **简化认证:** 本代理服务通过 **Google AI Node.js SDK** 直接与 Google Gemini API 进行交互。您只需遵循标准的 Google Cloud 认证流程（通常是本地存储凭证），本代理服务将自动利用这个已建立的认证，您无需为任何第三方应用单独配置或暴露您的 API 密钥。
+-   **零配置启动:** 项目完全自包含，不依赖任何全局安装。用户只需遵循标准的 `git clone` -> `npm install` -> `npm start/dev` 流程即可启动，极大降低了使用门槛。
 
 ---
 
-## 2. 实现方案与架构
+## 2. 架构与工具原理
 
-我们最终的实现是一个基于 TypeScript 的全栈 monorepo 式项目，其核心架构如下：
+本项目是一个基于 TypeScript 的全栈 monorepo 式项目，其核心架构如下：
 
 ```mermaid
 graph TD
@@ -28,10 +28,11 @@ graph TD
             E[静态文件服务器: /]
             F[实时日志 WebSocket: /ws/logs]
         end
+        H[Google AI Node.js SDK]
     end
 
-    subgraph "Gemini CLI (本地依赖)"
-        G[gemini 命令 (node_modules/.bin/gemini)]
+    subgraph "Google Gemini API (云服务)"
+        I[cloudcode-pa.googleapis.com]
     end
 
     A -- "加载主页" --> E
@@ -40,81 +41,98 @@ graph TD
     A -- "发送聊天" --> C
     B -- "调用 API" --> C
 
-    C -- "调用" --> G
+    C -- "调用" --> H
+    H -- "请求" --> I
+    I -- "响应" --> H
+    H -- "数据流/响应" --> C
     F -- "广播日志" --> A
 ```
 
-- **后端:** 使用轻量级、高性能的 **Fastify** 框架。它不仅负责代理核心的 `/v1/chat/completions` 请求，还通过 `@fastify/static` 托管前端 UI，并通过 `@fastify/websocket` 提供实时日志。
-- **前端:** 使用 **Vite** + **React** + **TypeScript** 的现代化技术栈构建。UI 方面，我们集成了 **Shadcn/UI** 和 **Tailwind CSS**，以确保界面的专业性和美观性。
-- **核心交互:** 后端通过 Node.js 的 `child_process` 模块调用**项目本地**的 Gemini CLI 可执行文件，并通过 `stdin` 和 `stdout` 与其进行流式通信，实现了与主程序的解耦和稳定性。
+-   **后端 (`src/server.ts`):** 使用轻量级、高性能的 **Fastify** 框架构建。
+    *   作为核心代理，它处理所有 `/v1/chat/completions` 请求，将 OpenAI 格式转换为 Gemini API 格式。
+    *   通过 `@fastify/static` 托管前端 Web UI。
+    *   通过 `@fastify/websocket` 提供实时的操作日志，方便调试和监控。
+    *   实现了健壮的消息内容处理（例如 `extractTextContent`）和内部内容过滤（例如 `filterInternalTags`），确保与 Gemini API 的兼容性和回复的纯净性。
+-   **Gemini API 交互层 (`src/gemini-provider.ts`):** 封装了与 Google Gemini API 的所有交互逻辑。
+    *   利用 **Google AI Node.js SDK** 直接进行 API 调用，而不是依赖外部 CLI 工具。
+    *   管理 OAuth2.0 认证流程，包括凭证的加载、刷新和持久化。
+    *   负责将处理后的用户/模型消息和系统指令 (`systemInstruction`) 转换为 Gemini API 所需的 `contents` 格式。
+    *   统一的 `broadcastLog` 函数用于内部日志输出。
+-   **数据适配 (`src/adapter.ts`):** 负责将 Gemini API 的响应格式转换为 OpenAI SSE 兼容格式。
+    *   在转换过程中，会应用内容过滤（例如 `filterInternalTags`），确保发送给客户端的文本不包含内部思考或指令。
+-   **前端 (Web UI):** 使用 **Vite** + **React** + **TypeScript** 的现代化技术栈构建。UI 方面，集成了 **Shadcn/UI** 和 **Tailwind CSS**，提供专业和美观的控制面板。
 
 ---
 
-## 3. 开发历程：从想法到产品的演进
+## 3. 如何使用
 
-这个项目并非一蹴而就，而是经历了一系列真实而宝贵的迭代和调试过程。
+遵循以下步骤即可快速启动和运行 **Gemini OpenAI Proxy**：
 
-### V1.0 - 核心思想：一个简单的命令行代理
-
-我们最初的目标是创建一个简单的 Node.js 服务，它能接收 API 请求，然后通过子进程调用**全局安装**的 `gemini` 命令。
-
-### V2.0 - 关键转折：拥抱本地依赖与 Web UI
-
-在初版即将完成时，我们遇到了两个关键的挑战：
-
-1.  **全局安装的脆弱性:** 我们意识到，依赖用户全局安装 `gemini` 会带来版本不兼容的风险和糟糕的用户体验。在您的关键反馈下，我们做出了一个决定性的架构调整：**将 `@google/gemini-cli` 作为项目的本地开发依赖**。这使得我们的应用完全自包含、稳定且易于分发。
-2.  **易用性的提升:** 为了解决端口占用等环境问题，并提供更友好的交互，我们决定为这个服务添加一个 Web UI 控制面板。
-
-### V2.1 & V2.2 - 功能迭代：UI 美化与聊天测试
-
-进入 V2 阶段后，我们迅速迭代：
-
-1.  **UI 美化:** 为了让产品更专业，我们引入了 **Shadcn/UI** 和 **Tailwind CSS**，并重构了所有前端组件，使其从一个开发者面板升级为了一个精美的产品界面。
-2.  **交互式测试:** 我们在 UI 中加入了一个完整的**聊天测试功能**，这成为了验证整个系统是否端到端正常工作的最直观、最可靠的方式。
-
-### V2.3 to V2.5 - 联调与调试：解决真实世界的问题
-
-在项目整合阶段，我们作为一个高效的团队，面对并解决了一系列真实开发中才会遇到的复杂问题：
-
-- **Vite 代理问题:** 我们发现前端（运行于 `5173` 端口）无法访问后端（运行于 `3003` 端口）的 API。通过在 `vite.config.ts` 中**配置 proxy**，我们成功解决了这个问题。
-- **Tailwind CSS 配置:** 我们通过日志发现 Tailwind 的 `content` 配置不正确，导致样式无法生成。通过修正路径并最终**将配置文件改为 `.cjs` 格式**，我们解决了 UI 的显示问题。
-- **WebSocket 类型错误:** 我们遇到了后端 `server.ts` 中因 TypeScript 类型不匹配导致的编译和运行时错误。通过仔细分析错误日志，我们**修正了对 `@fastify/websocket` 库的使用方式**，最终使实时日志功能稳定运行。
-- **长提示导致子进程挂起/超时问题:**
-  - **问题描述:** 在处理包含大量上下文或指令的聊天请求时，后端服务会启动 `gemini-cli` 子进程，但该子进程会长时间无响应，最终导致代理服务超时。控制台日志显示 `stderr` 和 `stdout` 流超时，且 `响应文本长度` 为 0。
-  - **原因分析:** 经过深入调试，我们发现 `gemini-cli` 在设计上支持通过标准输入（stdin）接收长提示，但当提示作为命令行参数传递时，由于操作系统的命令行参数长度限制，过长的提示会被截断，导致 `gemini-cli` 无法正确解析输入，从而挂起或行为异常。此外，`server.ts` 和 `cli-runner.ts` 中对 `stdout` 流的重复监听也可能导致数据收集不完整。
-  - **解决方案:**
-    1.  **通过 `stdin` 传递提示:** 修改 `cli-runner.ts`，不再将提示作为命令行参数传递，而是通过 `geminiProcess.stdin.write(prompt)` 将提示写入子进程的标准输入流，并立即调用 `geminiProcess.stdin.end()` 关闭输入流。
-    2.  **优化 `stdout` 流处理:**
-        *   在 `server.ts` 的 `handleGeminiCliRequest` 函数中，使用 `for await (const chunk of geminiStdoutStream)` 循环来异步、可靠地收集 `gemini-cli` 的标准输出。
-        *   从 `cli-runner.ts` 中移除对 `geminiProcess.stdout.on('data')` 的监听，确保 `stdout` 流只由 `server.ts` 中的 `for await...of` 循环处理，避免竞态条件和数据丢失。
-    3.  **调整超时时间:** 适当增加了 `stderr` 和 `stdout` 流的超时时间，以适应 `gemini-cli` 处理复杂请求可能需要的时间。
-
-正是这一次次严谨的规划、开发、反馈和调试，才最终成就了今天这个高质量的、功能完备的项目。
-
----
-
-## 4. 最终运行指南
-1. **先在本地启动Gemini cli，然后登陆自己的账号** 
-
-2.  **进入项目目录:**
+1.  **进行 Google Cloud 认证:**
+    在运行代理服务之前，您需要确保已经完成了 Google Cloud 认证，以便代理能够访问 Gemini API。最简单的方式是**安装并运行一次 `gemini-cli` 工具并登录您的 Google 账号**。这将会在您的主目录下生成必要的 OAuth 凭证（通常在 `~/.gemini/oauth_creds.json`），本代理服务将自动使用这些凭证。
+    *   如果您尚未安装 `gemini-cli`，可以按照官方指南进行安装。
+    *   运行 `gemini` 命令并按照提示登录：`gemini`
+2.  **克隆项目:**
     ```bash
+    git clone https://github.com/your-repo/gemini-openai-proxy.git
     cd gemini-openai-proxy
     ```
 3.  **安装所有依赖:**
     ```bash
     npm install
-    ```3.  **启动开发环境 (推荐):**
+    ```
+    此命令会安装所有必要的 Node.js 依赖，包括 Google AI Node.js SDK。
+4.  **启动开发环境 (推荐):**
     ```bash
     npm run dev
-    ```    启动后，在浏览器中访问 `http://localhost:5173` 查看功能完善的控制面板。
-
+    ```
+    启动成功后，在浏览器中访问 `http://localhost:5173` 即可查看不太完善的控制面板。查看服务器状态和实时日志。
 5.  **构建并运行生产环境:**
     ```bash
     npm run build
     npm start
     ```
- 
+    这将编译项目并以生产模式启动服务器。Web UI 将在后端服务相同的端口 (`http://localhost:3003` 或您配置的端口) 提供。
 
 ---
 
-作为项目的架构师，我为我们共同取得的成就感到无比自豪。这个项目是团队合作与专业精神的完美体现。
+## 4. OpenAI 兼容 API 使用指南
+
+本代理服务提供一个与 OpenAI Chat Completions API (`/v1/chat/completions`) 完全兼容的接口，这意味着您可以将任何支持 OpenAI API 的客户端或应用配置为使用本代理服务来与 Google Gemini 模型交互。
+
+### API Endpoint 配置
+
+要使用本代理服务，您需要将客户端的 API **基础 URL (Base URL)** 或 **API Endpoint** 配置为代理服务的地址。
+
+*   **开发环境:** `http://localhost:3003/v1/chat/completions` (如果通过 `npm run dev` 启动，前端通常会在 `5173` 端口访问后端 `3003` 端口)
+*   **生产环境:** 部署后的服务器地址，例如 `http://your-server-ip:3003/v1/chat/completions` 或 `https://your-domain.com/v1/chat/completions`
+
+**请注意:** 代理服务监听在 `3003` 端口（可在 `src/server.ts` 中配置）。
+
+### API Key 配置 (占位符)
+
+由于本代理服务负责与 Google Gemini API 的认证，并利用您本地的 Google Cloud 凭证，因此对于客户端来说，**无需提供真实的 Gemini API Key**。
+
+然而，许多 OpenAI 兼容客户端会强制要求填写 API Key。在这种情况下，您可以填写任何非空字符串作为占位符（例如 `sk-gcli2api` 或 `YOUR_API_KEY`），只要它不是空的，客户端通常就能正常工作。
+
+### 示例配置 (以 `curl` 为例)
+
+以下是如何使用 `curl` 命令调用代理 API 的一个简单示例：
+
+```bash
+curl http://localhost:3003/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-gcli2api-placeholder" \
+  -d '{
+    "model": "gemini-2.5-flash",
+    "messages": [
+      {"role": "user", "content": "你好，请给我讲一个关于人工智能的简短故事。"}
+    ],
+    "stream": true
+  }'
+```
+
+**重要提示:**
+*   `model` 字段应指定为代理支持的 Gemini 模型，例如 `gemini-2.5-flash` 或 `gemini-2.5-pro`。
+*   `Authorization` 头中的 `Bearer` token 可以是任何非空字符串，因为代理层会处理实际的 Google 认证。
+*   `stream: true` 支持流式响应，客户端会逐块接收模型生成的文本。
