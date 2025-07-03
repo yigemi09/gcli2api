@@ -16,13 +16,13 @@
 
 ```mermaid
 graph TD
-    subgraph 用户浏览器/第三方应用
+    subgraph userClient[用户浏览器/第三方应用]
         A[Web UI (React + Tailwind)]
         B[任何 OpenAI 兼容客户端]
     end
 
-    subgraph gemini-openai-proxy (我们的应用)
-        subgraph Fastify 后端 (Node.js)
+    subgraph proxy[gemini-openai-proxy（我们的应用）]
+        subgraph backend[Fastify 后端（Node.js）]
             C[API 代理: /v1/chat/completions]
             D[Web UI API: /api/status]
             E[静态文件服务器: /]
@@ -31,21 +31,21 @@ graph TD
         H[Google AI Node.js SDK]
     end
 
-    subgraph Google Gemini API (云服务)
+    subgraph geminiAPI[Google Gemini API（云服务）]
         I[cloudcode-pa.googleapis.com]
     end
 
-    A -- 加载主页 --> E
-    A -- 请求状态 --> D
-    A -- 建立日志连接 --> F
-    A -- 发送聊天 --> C
-    B -- 调用 API --> C
+    A -->|加载主页| E
+    A -->|请求状态| D
+    A -->|建立日志连接| F
+    A -->|发送聊天| C
+    B -->|调用 API| C
 
-    C -- 调用 --> H
-    H -- 请求 --> I
-    I -- 响应 --> H
-    H -- 数据流/响应 --> C
-    F -- 广播日志 --> A
+    C --> H
+    H --> I
+    I --> H
+    H --> C
+    F -->|广播日志| A
 ```
 
 -   **后端 (`src/server.ts`):** 使用轻量级、高性能的 **Fastify** 框架构建。
